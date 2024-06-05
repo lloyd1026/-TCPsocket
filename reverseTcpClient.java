@@ -40,6 +40,7 @@ public class reverseTcpClient {
             e.printStackTrace();
         }
     }
+
     // 启动客户端 启动两个线程
     public void startClient(String serverIp, int serverPort, int Lmin, int Lmax, String filePath) throws IOException {
         InetSocketAddress address = new InetSocketAddress(serverIp, serverPort);
@@ -63,26 +64,24 @@ public class reverseTcpClient {
         }
         buffer.clear();
         // 等待服务器的agreement————————————————这里的处理有待优化
-        int bytesRead = 0;
-        while(true){
-            bytesRead += client.read(buffer);    // 非阻塞模式下非阻塞，从SocketChannel里面读取数据最小单位就是1个字节，但可能存在一轮读不满预期的情况
-            if(bytesRead < 2) continue;
-
-            buffer.flip();                          // limit设为当前position，position回到0
-            byte messageType = buffer.get();        // 有四种方法，这种是读取一个字节 缓冲区position + 1
-            if(messageType == _agreement){
-                System.out.println("System agreed to receive " + N + " segments");
-                buffer.clear();
-                break;
-            }
-            buffer.compact();                       // 将缓冲区中未读的数据(position到limit之间)移到缓冲区的起始位置，然后position设置为未读数据的末尾，limit设置为capacity
-            if(buffer.position() == 0) break;       // 如果缓冲区已经全部处理完，就退出
+        ByteBuffer typeBuffer = ByteBuffer.allocate(2);
+        while(typeBuffer.hasRemaining()){
+            client.read(typeBuffer);    // 非阻塞模式下非阻塞，从SocketChannel里面读取数据最小单位就是1个字节，但可能存在一轮读不满预期的情况
+        }
+        typeBuffer.flip();                          // limit设为当前position，position回到0
+        short messageType = typeBuffer.getShort();
+        if(messageType != _agreement){
+            System.out.println("Server refuse your request");
+            return;
+        } else{
+            System.out.println("Server agreed to receive " + N + " segments");
+            typeBuffer.clear();
         }
 
         // 发送分块后的文件块 创建发送线程
-        SendThread sendThread = new SendThread(client, segments, buffer);
+        SendThread sendThread = new SendThread(client, segments);
         // 接收文件块 创建接收线程
-        ReceivedThread receivedThread = new ReceivedThread(client, buffer, N, savePath);
+        ReceivedThread receivedThread = new ReceivedThread(client, N, savePath);
         // 启动两个线程
         sendThread.start();
         receivedThread.start();
@@ -95,6 +94,7 @@ public class reverseTcpClient {
         }
         client.close();
     }
+
     // 文件随机分块
     public List<byte[]> splitFileData(String filePath, int Lmin, int Lmax) throws IOException{
         byte[] fileData = Files.readAllBytes(Paths.get(filePath));
@@ -123,10 +123,10 @@ class SendThread extends Thread{
     private final List<byte[]> segments;
     private final ByteBuffer buffer;
 
-    public SendThread(SocketChannel client, List<byte[]> segments, ByteBuffer buffer){
+    public SendThread(SocketChannel client, List<byte[]> segments){
         this.client = client;
         this.segments = segments;
-        this.buffer = buffer;
+        buffer = ByteBuffer.allocate(1024);
     }
 
     @Override
@@ -178,9 +178,9 @@ class ReceivedThread extends Thread{
     private int N;
     private final String savePath;
 
-    public ReceivedThread(SocketChannel client, ByteBuffer buffer, int N, String savePath) {
+    public ReceivedThread(SocketChannel client, int N, String savePath) {
         this.client = client;
-        this.buffer = buffer;
+        buffer = ByteBuffer.allocate(1024);
         this.N = N;
         this.savePath = savePath;
         headerBuffer = ByteBuffer.allocate(reverseTcpClient._headerSize);
@@ -197,11 +197,11 @@ class ReceivedThread extends Thread{
                     client.read(headerBuffer);
                 }
                 headerBuffer.flip();
-                byte[] messageType = new byte[2];
-                headerBuffer.get(messageType);
+
+                short messageType = headerBuffer.getShort();
                 int segmentSize = headerBuffer.getInt();
                 headerBuffer.clear();
-                if(messageType[1] == reverseTcpClient._serverToClient){
+                if(messageType == reverseTcpClient._serverToClient){
                     messageContent = new byte[segmentSize];
                     System.out.println("Receiving segment (Size: " + segmentSize + " )from Server...");
                 }
