@@ -11,7 +11,12 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 
-import java.util.Stack;
+import java.nio.channels.FileChannel;
+import java.io.FileInputStream;
+import java.io.File;
+import java.util.Arrays;
+import java.util.Comparator;
+
 // 主类
 public class reverseTcpClient {
     public static final byte _initialization = 0x01;                        // 一个字节8位，对应十六进制的2位
@@ -20,6 +25,7 @@ public class reverseTcpClient {
     public static final byte _serverToClient = 0x04;
     public static final int _headerSize = 6;                                // 头部字段长度
     private final ByteBuffer buffer = ByteBuffer.allocate(1024);    // position limit capacity
+
     // 主方法
     public static void main(String[] args) {
         if (args.length < 5) {
@@ -134,6 +140,7 @@ class SendThread extends Thread{
         try{
             for(byte[] segment : segments){
                 sendMessage(client, reverseTcpClient._clientToServer, segment);
+                System.out.println("client message send successfully");
             }
         } catch(IOException e){
             e.printStackTrace();
@@ -177,6 +184,7 @@ class ReceivedThread extends Thread{
     private final ByteBuffer headerBuffer;
     private int N;
     private final String savePath;
+    private final String tempFolderPath = "/Users/lloyd/temp";
 
     public ReceivedThread(SocketChannel client, int N, String savePath) {
         this.client = client;
@@ -188,7 +196,7 @@ class ReceivedThread extends Thread{
 
     @Override
     public void run() {
-        Stack<byte[]> receivedSegments = new Stack<>();
+        int seqNo = 1;
         try{
             while (true) {
                 byte[] messageContent = new byte[0];                      // 准备数据
@@ -223,11 +231,12 @@ class ReceivedThread extends Thread{
                 }
                 String receivedString = new String(messageContent);
                 System.out.println("Received reversed String: " + receivedString);
-                receivedSegments.push(messageContent);
+                saveToFile(messageContent, tempFolderPath, seqNo);
+                seqNo++;
                 if(--N == 0) break;
             }
-            // 全部数据都读完，保存到指定文件中
-            saveToFile(receivedSegments, savePath);
+            // 全部数据都读完，保存到指定目录的文件中
+            reverseMergeFile(tempFolderPath, savePath);
         } catch(IOException e){
             e.printStackTrace();
         } finally{
@@ -239,20 +248,54 @@ class ReceivedThread extends Thread{
         }
     }
     // 保存反转数据到文件
-    public void saveToFile(Stack<byte[]> segments, String filePath) throws IOException{
-
+    public void saveToFile(byte[] segment, String tempFolderPath, int seqNo) throws IOException{
+        File dir = new File(tempFolderPath);
+        if(!dir.exists()) dir.mkdirs();
         try{
-            Path path = Paths.get(filePath);
-            // 创建文件输出流
-            FileOutputStream fos = new FileOutputStream(path.toFile());
-            while(!segments.isEmpty()){
-                byte[] segment = segments.pop();
-                fos.write(new String(segment).getBytes());
+            Path path = Paths.get(tempFolderPath, seqNo + ".txt");
+            if (!Files.exists(path)) {
+                Files.createFile(path);
             }
+            // 创建文件输出流
+            FileOutputStream fos = new FileOutputStream(path.toFile(), true);
+            fos.write(new String(segment).getBytes());
             fos.close();
-            System.out.println("File saved succeed!");
+            System.out.println("File " + seqNo + " saved succeed!");
         } catch (IOException e){
             e.printStackTrace();
+        }
+    }
+    // 从文件名中提取数字部分
+    private static int extractNumber(File file) {
+        String fileName = file.getName();
+        String numberStr = fileName.replaceAll("[^0-9]", ""); // 使用正则表达式提取数字部分
+        return Integer.parseInt(numberStr);
+    }
+    // 反转文件
+    public void reverseMergeFile(String tempFolderPath, String filePath) throws IOException{
+        File tempFolder = new File(tempFolderPath);
+        File[] tempFiles = tempFolder.listFiles((dir, name) -> name.endsWith(".txt"));
+
+        if (tempFiles == null || tempFiles.length == 0) {
+            throw new IOException("No temp files found to reverse");
+        }
+        // 根据文件名进行顺序排序
+        Arrays.sort(tempFiles, Comparator.comparingInt(ReceivedThread::extractNumber));
+
+        // FileChannel 的read方法是阻塞式的
+        try (FileOutputStream fos = new FileOutputStream(new File(filePath))) {
+            for (int i = tempFiles.length - 1; i >= 0; i--) {
+                File tempFile = tempFiles[i];
+                try (FileChannel tempChannel = new FileInputStream(tempFile).getChannel()) {
+                    while (tempChannel.read(buffer) > 0) {
+                        buffer.flip();
+                        while (buffer.hasRemaining()) {
+                            fos.write(buffer.get());
+                        }
+                        buffer.clear();
+                    }
+                }
+            }
         }
     }
 }

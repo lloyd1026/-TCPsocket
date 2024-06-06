@@ -13,6 +13,7 @@ import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
+
 public class reverseTcpServer {
     public static final byte _initialization = 0x01;                                // 一个字节8位，对应十六进制的2位
     public static final byte _agreement = 0x02;
@@ -27,6 +28,9 @@ public class reverseTcpServer {
 
     private final ExecutorService executorService;                                              // 线程池
     private final int _workers = 10;                                                            // 工人数
+
+
+    // private final String _addr = "/Users/lloyd/temp";                                           // 根目录地址
 
     // 构造方法
     public reverseTcpServer(){
@@ -62,11 +66,11 @@ public class reverseTcpServer {
                 if (key.isAcceptable()) {       // 处理连接事件
                     accept(key);
                 } else if (key.isReadable()) {
-                    // read(key);
-                    executorService.submit(() -> handleRead(key));                 // 处理读事件
+                    read(key);
+                    // executorService.submit(() -> handleRead(key));                 // 处理读事件
                 } else if(key.isWritable()){
-                    // write(key);
-                    executorService.submit(() -> handleWrite(key));                // 处理写事件
+                    write(key);
+                    // executorService.submit(() -> handleWrite(key));                // 处理写事件
                 }
             }
         }
@@ -78,6 +82,19 @@ public class reverseTcpServer {
         SocketChannel client = serverSocket.accept();   // 接受客户端链接
         client.configureBlocking(false);                // 配置客户端通道为非阻塞模式
         client.register(selector, SelectionKey.OP_READ);// 将客户端通道注册到选择器，监听读事件
+
+//        // 获取客户端的远程地址
+//        String clientAddress = client.getRemoteAddress().toString();
+//        // 将IP地址中的斜杠替换成下划线，以避免文件夹名称中出现不允许的字符
+//        String clientFolderName = clientAddress.replace("/", "_");
+//        // 构建客户端文件夹的路径
+//        Path clientFolder = Paths.get("/Users/lloyd/temp", clientFolderName);
+//        // 如果文件夹不存在，则创建该文件夹
+//        if (!Files.exists(clientFolder)) {
+//            Files.createDirectories(clientFolder);
+//        }
+//        tempFolder.put(client, clientFolder);
+
         channelLocks.put(client, new Object());         // 初始化锁对象
         System.out.println("Accepted connection from " + client);
     }
@@ -159,8 +176,6 @@ public class reverseTcpServer {
 
         sendMessage(buffer, client, _serverToClient, messageContent);
         int n = numberOfSegments.get(client);
-
-        System.out.println(n);
 
         if(n != 0){
             client.register(selector, SelectionKey.OP_READ);
