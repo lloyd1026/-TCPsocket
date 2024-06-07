@@ -15,22 +15,20 @@ import java.util.concurrent.Executors;
 
 
 public class reverseTcpServer {
-    public static final byte _initialization = 0x01;                                // 一个字节8位，对应十六进制的2位
+    public static final byte _initialization = 0x01;                                            // 一个字节8位，对应十六进制的2位
     public static final byte _agreement = 0x02;
     public static final byte _clientToServer = 0x03;
     public static final byte _serverToClient = 0x04;
-    public static final int _headerSize = 6;                                        // 头部字段长度
+    public static final int _headerSize = 6;                                                    // 头部字段长度
     // ——————————————————————————————————————————————————————————
     private Selector selector;                                                                  // 用于管理多个通道的选择器
-    private final Map<SocketChannel, byte[]> containers = new ConcurrentHashMap<>();            // 最大2GB 远大于1024Byte————虑是否改成文件
+    private final Map<SocketChannel, byte[]> containers = new ConcurrentHashMap<>();
     private final Map<SocketChannel, Integer> numberOfSegments = new ConcurrentHashMap<>();
     private final Map<SocketChannel, Object> channelLocks = new ConcurrentHashMap<>();
 
     private final ExecutorService executorService;                                              // 线程池
     private final int _workers = 10;                                                            // 工人数
 
-
-    // private final String _addr = "/Users/lloyd/temp";                                           // 根目录地址
 
     // 构造方法
     public reverseTcpServer(){
@@ -63,7 +61,7 @@ public class reverseTcpServer {
                 keys.remove();                  // 从集合中移除已经处理的键 解绑
 
                 if (!key.isValid()) continue;
-                if (key.isAcceptable()) {       // 处理连接事件
+                if (key.isAcceptable()) {                                           // 处理连接事件
                     accept(key);
                 } else if (key.isReadable()) {
                     read(key);

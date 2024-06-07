@@ -1,21 +1,20 @@
-import java.io.FileOutputStream;
 import java.io.IOException;
-import java.net.InetSocketAddress;
-import java.nio.ByteBuffer;
-import java.nio.channels.SocketChannel;
+import java.io.File;
+import java.io.RandomAccessFile;
 
+import java.net.InetSocketAddress;
+
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.channels.SocketChannel;
 import java.nio.file.Files;
-import java.nio.file.Paths;
 import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
-
-import java.nio.channels.FileChannel;
-import java.io.FileInputStream;
-import java.io.File;
-import java.util.Arrays;
-import java.util.Comparator;
 
 // 主类
 public class reverseTcpClient {
@@ -30,35 +29,46 @@ public class reverseTcpClient {
     public static void main(String[] args) {
         if (args.length < 5) {
             System.out.println("需要5个参数[ip, 端口, 分段最小长度, 分段最大长度, 源文件地址]");
+            System.out.println("第6个参数可选[反转文件保存路径] 不提供采用默认地址");
             return;
         }
-
         String serverIp = args[0];
         int serverPort = Integer.parseInt(args[1]);
         // 随机分段的长度限定范围，最后一块除外（最后一块可能会小于Lmin）
         int Lmin = Integer.parseInt(args[2]);
         int Lmax = Integer.parseInt(args[3]);
         String filePath = args[4];
+        String savePath = null;
+
+        if (args.length >= 6){
+            savePath = args[5];
+        }
 
         try {
-            new reverseTcpClient().startClient(serverIp, serverPort, Lmin, Lmax, filePath);
+            new reverseTcpClient().startClient(serverIp, serverPort, Lmin, Lmax, filePath, savePath);
         } catch (IOException e) {
             e.printStackTrace();
         }
     }
 
     // 启动客户端 启动两个线程
-    public void startClient(String serverIp, int serverPort, int Lmin, int Lmax, String filePath) throws IOException {
+    public void startClient(String serverIp, int serverPort, int Lmin, int Lmax, String filePath, String savePath) throws IOException {
         InetSocketAddress address = new InetSocketAddress(serverIp, serverPort);
         SocketChannel client = SocketChannel.open(address);
         client.configureBlocking(false);
-        // 给出文件地址，文件随机分块
-        // String filePath = "/Users/lloyd/Desktop/output.txt";
+
         // 文件保存地址
-        String fileName = Paths.get(filePath).getFileName().toString();
-        String savePath = "/Users/lloyd/Desktop/reversed_" + fileName + ".txt";
+        if(savePath == null){
+            Path path = Paths.get(filePath);
+            String fileName = path.getFileName().toString();
+            String parentDir = path.getParent().toString();
+            savePath = Paths.get(parentDir, "reversed_" + fileName).toString();
+//            String fileName = Paths.get(filePath).getFileName().toString();
+//            savePath = "/Users/lloyd/Desktop/reversed_" + fileName + ".txt";
+        }
+
         // 获取分块
-        List<byte[]> segments = splitFileData(filePath, Lmin, Lmax);
+        List<FileSegment> segments = splitFileData(filePath, Lmin, Lmax);
         // 分块个数
         int N = segments.size();
         // 发送初始化消息
@@ -69,7 +79,6 @@ public class reverseTcpClient {
             client.write(buffer);
         }
         buffer.clear();
-        // 等待服务器的agreement————————————————这里的处理有待优化
         ByteBuffer typeBuffer = ByteBuffer.allocate(2);
         while(typeBuffer.hasRemaining()){
             client.read(typeBuffer);    // 非阻塞模式下非阻塞，从SocketChannel里面读取数据最小单位就是1个字节，但可能存在一轮读不满预期的情况
@@ -85,7 +94,7 @@ public class reverseTcpClient {
         }
 
         // 发送分块后的文件块 创建发送线程
-        SendThread sendThread = new SendThread(client, segments);
+        SendThread sendThread = new SendThread(client, filePath, segments);
         // 接收文件块 创建接收线程
         ReceivedThread receivedThread = new ReceivedThread(client, N, savePath);
         // 启动两个线程
@@ -102,35 +111,44 @@ public class reverseTcpClient {
     }
 
     // 文件随机分块
-    public List<byte[]> splitFileData(String filePath, int Lmin, int Lmax) throws IOException{
-        byte[] fileData = Files.readAllBytes(Paths.get(filePath));
-        Random random = new Random();
-        int position = 0;
-        int totalLength = fileData.length;
-        List<byte[]> segments = new ArrayList<>();
+    public List<FileSegment> splitFileData(String filePath, int Lmin, int Lmax) throws IOException{
+        List<FileSegment> segments = new ArrayList<>();
+        Path path = Paths.get(filePath);
+        long fileSize = Files.size(path);
+        long position = 0;
 
-        while(position < totalLength){
+        Random random = new Random();
+
+        while (position < fileSize) {
             int segmentSize = random.nextInt(Lmax - Lmin + 1) + Lmin;
-            if(position + segmentSize > totalLength){
-                // 最后一段 就把剩下的拿出来即可
-                segmentSize = totalLength - position;
+            if (position + segmentSize > fileSize) {
+                segmentSize = (int) (fileSize - position);
             }
-            byte[] segment = new byte[segmentSize];
-            System.arraycopy(fileData, position, segment, 0, segmentSize);
-            segments.add(segment);
+            segments.add(new FileSegment(position, segmentSize));
             position += segmentSize;
         }
         return segments;
+    }
+
+    static class FileSegment{
+        long position;
+        int size;
+        public FileSegment(long position, int size){
+            this.position = position;
+            this.size = size;
+        }
     }
 }
 // 发送类
 class SendThread extends Thread{
     private final SocketChannel client;
-    private final List<byte[]> segments;
+    private final List<reverseTcpClient.FileSegment> segments;
     private final ByteBuffer buffer;
+    private final String filePath;
 
-    public SendThread(SocketChannel client, List<byte[]> segments){
+    public SendThread(SocketChannel client, String filePath, List<reverseTcpClient.FileSegment> segments){
         this.client = client;
+        this.filePath = filePath;
         this.segments = segments;
         buffer = ByteBuffer.allocate(1024);
     }
@@ -138,9 +156,8 @@ class SendThread extends Thread{
     @Override
     public void run(){
         try{
-            for(byte[] segment : segments){
-                sendMessage(client, reverseTcpClient._clientToServer, segment);
-                System.out.println("client message send successfully");
+            for(reverseTcpClient.FileSegment segment : segments){
+                sendMessage(client, reverseTcpClient._clientToServer, filePath, segment);
             }
         } catch(IOException e){
             e.printStackTrace();
@@ -153,27 +170,30 @@ class SendThread extends Thread{
         }
     }
 
-    public void sendMessage(SocketChannel client, byte messageType, byte[] messageContent) throws IOException{
+    public void sendMessage(SocketChannel client, byte messageType, String filePath, reverseTcpClient.FileSegment segment) throws IOException{
         // 发送头部字段 type（2B） + size（4B）
         buffer.putShort(messageType);
-        buffer.putInt(messageContent.length);
+        buffer.putInt(segment.size);
         buffer.flip();
         while(buffer.hasRemaining()){           // 检查的是position和limit之间的距离
             client.write(buffer);
         }
         buffer.clear();
         // 发送内容
-        int bytesWrittern = 0;
-        while(bytesWrittern < messageContent.length){
-            int remaining = messageContent.length - bytesWrittern;
-            int writeSize = Math.min(remaining, buffer.remaining());    // buffer的剩余写入量，容器中还有多少数据没写进去
-            buffer.put(messageContent, bytesWrittern, writeSize);       // 从messageContent的offset开始写，写进去length个
-            bytesWrittern += writeSize;
-            buffer.flip();
-            while(buffer.hasRemaining()){
-                client.write(buffer);
+        try (FileChannel fileChannel = FileChannel.open(Paths.get(filePath), StandardOpenOption.READ)) {
+            fileChannel.position(segment.position);
+            while (segment.size > 0) {
+                int leftBytesToRead = Math.min(buffer.remaining(), segment.size);
+                buffer.limit(leftBytesToRead);
+                int bytesRead = fileChannel.read(buffer);
+                if (bytesRead == -1) break;
+                buffer.flip();
+                while (buffer.hasRemaining()) {
+                    client.write(buffer);
+                }
+                buffer.clear();
+                segment.size -= bytesRead;
             }
-            buffer.clear();
         }
     }
 }
@@ -196,7 +216,6 @@ class ReceivedThread extends Thread{
 
     @Override
     public void run() {
-        int seqNo = 1;
         try{
             while (true) {
                 byte[] messageContent = new byte[0];                      // 准备数据
@@ -231,12 +250,11 @@ class ReceivedThread extends Thread{
                 }
                 String receivedString = new String(messageContent);
                 System.out.println("Received reversed String: " + receivedString);
-                saveToFile(messageContent, tempFolderPath, seqNo);
-                seqNo++;
+
+                insertDataAtFileHead(savePath, messageContent);
+
                 if(--N == 0) break;
             }
-            // 全部数据都读完，保存到指定目录的文件中
-            reverseMergeFile(tempFolderPath, savePath);
         } catch(IOException e){
             e.printStackTrace();
         } finally{
@@ -247,55 +265,32 @@ class ReceivedThread extends Thread{
             }
         }
     }
-    // 保存反转数据到文件
-    public void saveToFile(byte[] segment, String tempFolderPath, int seqNo) throws IOException{
-        File dir = new File(tempFolderPath);
-        if(!dir.exists()) dir.mkdirs();
-        try{
-            Path path = Paths.get(tempFolderPath, seqNo + ".txt");
-            if (!Files.exists(path)) {
-                Files.createFile(path);
-            }
-            // 创建文件输出流
-            FileOutputStream fos = new FileOutputStream(path.toFile(), true);
-            fos.write(new String(segment).getBytes());
-            fos.close();
-            System.out.println("File " + seqNo + " saved succeed!");
-        } catch (IOException e){
-            e.printStackTrace();
-        }
-    }
-    // 从文件名中提取数字部分
-    private static int extractNumber(File file) {
-        String fileName = file.getName();
-        String numberStr = fileName.replaceAll("[^0-9]", ""); // 使用正则表达式提取数字部分
-        return Integer.parseInt(numberStr);
-    }
-    // 反转文件
-    public void reverseMergeFile(String tempFolderPath, String filePath) throws IOException{
-        File tempFolder = new File(tempFolderPath);
-        File[] tempFiles = tempFolder.listFiles((dir, name) -> name.endsWith(".txt"));
+    // 保存文件
+    public static void insertDataAtFileHead(String filePath, byte[] segment) throws IOException{
+        File file = new File(filePath);
+        RandomAccessFile raf = new RandomAccessFile(file, "rw");
+        long originalLength = raf.length();
 
-        if (tempFiles == null || tempFiles.length == 0) {
-            throw new IOException("No temp files found to reverse");
-        }
-        // 根据文件名进行顺序排序
-        Arrays.sort(tempFiles, Comparator.comparingInt(ReceivedThread::extractNumber));
+        File tempFile = new File(filePath + ".tmp");
+        RandomAccessFile tempRaf = new RandomAccessFile(tempFile, "rw");
+        // 将待插入数据写入临时文件
+        tempRaf.write(segment);
 
-        // FileChannel 的read方法是阻塞式的
-        try (FileOutputStream fos = new FileOutputStream(new File(filePath))) {
-            for (int i = tempFiles.length - 1; i >= 0; i--) {
-                File tempFile = tempFiles[i];
-                try (FileChannel tempChannel = new FileInputStream(tempFile).getChannel()) {
-                    while (tempChannel.read(buffer) > 0) {
-                        buffer.flip();
-                        while (buffer.hasRemaining()) {
-                            fos.write(buffer.get());
-                        }
-                        buffer.clear();
-                    }
-                }
-            }
+        raf.seek(0);
+        byte[] buffer = new byte[1024];
+        int bytesRead;
+        while ((bytesRead = raf.read(buffer)) != -1) {
+            tempRaf.write(buffer, 0, bytesRead);
+        }
+
+        tempRaf.close();
+        raf.close();
+
+        if (!file.delete()) {
+            throw new IOException("Failed to delete the original file");
+        }
+        if (!tempFile.renameTo(file)) {
+            throw new IOException("Failed to rename the temporary file to the original file");
         }
     }
 }
